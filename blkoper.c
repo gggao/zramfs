@@ -16,6 +16,7 @@
 	int left = size;
 	int i = begin_block - 1;
 	while (++i <= end_block) {
+	printk(KERN_NOTICE "zramfs, get_dev_content, bdev:%p, block:%d, block_size:%d", bdev, i, block_size);
 		bh = __bread(bdev, i, block_size);
 		count = block_size;
 		if (i == end_block)

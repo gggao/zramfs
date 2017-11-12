@@ -76,7 +76,7 @@ struct inode *ramfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 		inode->i_uid = current_fsuid();
 		inode->i_gid = current_fsgid();
 		inode->i_mapping->a_ops = &ramfs_aops;
-		inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
+		//inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
 		mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
 		mapping_set_unevictable(inode->i_mapping);
 		inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
@@ -255,7 +255,7 @@ struct inode* zramfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 	inode->i_gid = current_fsgid();
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_mapping->a_ops = &ramfs_aops;
-	inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
+	//inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
 	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
 	//mapping_set_unevictable(inode->i_mapping);
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
@@ -331,7 +331,7 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 	//inode->i_blksize = sb->s_blocksize;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_mapping->a_ops = &ramfs_aops;
-	inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
+	//inode->i_mapping->backing_dev_info = &ramfs_backing_dev_info;
 	mapping_set_gfp_mask(inode->i_mapping, GFP_HIGHUSER);
 	//mapping_set_unevictable(inode->i_mapping);
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
@@ -354,6 +354,8 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 		inode->i_op = &page_symlink_inode_operations;
 		break;
 	}
+	//add inode cache
+	insert_inode_locked(inode);
         return inode;	
 }	
 
@@ -632,7 +634,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 /**
  * lookup a dentry
  */
-int zramfs_find_diretory(struct inode * inode, struct dentry *dentry)
+void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct buffer_head **bhp, struct directory **fentry)
 {
 
 	struct gza_inode *ginode = inode->i_private;
@@ -651,8 +653,7 @@ int zramfs_find_diretory(struct inode * inode, struct dentry *dentry)
 
 	void * dty;
 	void * cur;
-	int dic_num = -1;
-	int err = -ENOSPC;
+	//TODO: last_block must is file size
 	while (cur_block < last_block) {
 		if (ginode->data[cur_block]) {
 			file_block = ginode->data[cur_block];
@@ -667,15 +668,19 @@ int zramfs_find_diretory(struct inode * inode, struct dentry *dentry)
 					cur = bh->b_data;
 				}
 				dty = cur;
-				while(dty < cur + blk_blocksize &&
-						((struct directory *)dty)->d_status) {
+				while(dty < cur + blk_blocksize) {
+					if (!((struct directory *)dty)->d_status) {
+						dty += DIRECTORY_SIZE;
+						continue;	
+					}
+					if (!memcmp(dentry->d_name.name, ((struct directory *)dty)->d_name, dentry->d_name.len)) {
+						//do something
+						printk(KERN_NOTICE "zramfs_find_directory, directory name:%p", dentry->d_name.name);
+						*bhp = bh;
+						*fentry = dty;
+						break;
+					}
 					dty += DIRECTORY_SIZE;
-					dic_num++;
-				}
-				if (dty < cur + blk_blocksize ) {
-					copy_dentry((struct directory*) dty, dentry);
-					put_bh(bh);
-					return 0;	
 				}
 				put_bh(bh);
 				dev_block++;
@@ -688,10 +693,44 @@ int zramfs_find_diretory(struct inode * inode, struct dentry *dentry)
 		}	
 	}
 
-	return err;
+}
+
+static struct dentry *zramfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+{
+	struct buffer_head* bh = NULL;
+        struct directory *fentry = NULL;
+	int inum;
+	struct inode *inode;
+	//int err;
+       	zramfs_find_diretory(dir, dentry, &bh, &fentry);
+	if (!fentry)
+		goto not_find;
+	printk(KERN_NOTICE "zramfs_lookup, find bh:%p, fentry:%p, bh->count:%p", bh, fentry, &bh->b_count);
+	inum = fentry->d_num;
+	put_bh(bh);
+	
+	printk(KERN_NOTICE "zramfs_lookup, find parent inode:%ld", dir->i_ino);
+	printk(KERN_NOTICE "zramfs_lookup, find entry name:%s", dentry->d_name.name);
+	printk(KERN_NOTICE "zramfs_lookup, find entry:%p", fentry);
+	printk(KERN_NOTICE "zramfs_lookup, find entry inode num:%d", fentry->d_num);
+	//lookup from inode cache
+	inode = ilookup(dir->i_sb, inum);
+	goto find;
+	//lookup from disk 	
+	inode = zramfs_get_inode_byid(dir->i_sb, fentry->d_num);
+	if (!inode)
+		goto not_find;
+not_find:
+	// may add del operations, look simple_look TODO
+	d_add(dentry, NULL);
+	return NULL;
+find:
+	d_add(dentry, inode);
+	return NULL;
 }
 
 
+/*
 int zramfs_lookup_inode(struct inode * inode, struct dentry* dentry,  struct page** page, int *dic_n, int * inum)
 {
 	const char * name = dentry->d_name.name;
@@ -772,6 +811,7 @@ static struct dentry *zramfs_lookup(struct inode *dir, struct dentry *dentry, st
 	d_add(dentry, inode);
 	return dentry;
 }
+*/
 
 int zramfs_mkdir(struct inode* dir, struct dentry * dentry, int mode)
 {
@@ -784,7 +824,7 @@ int zramfs_mkdir(struct inode* dir, struct dentry * dentry, int mode)
 	err =  zramfs_get_valid_diretory(dir, dentry);
 	if (err)
 		return err;
-
+	
 	return err;
 }
 
@@ -920,7 +960,7 @@ int zramfs_write_inode(struct inode * inode, int do_sync)
 
 struct dentry *zramfs_simple_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
-	
+	return NULL;	
 }
 
 static int permission(struct inode* inode, int flag){
@@ -931,7 +971,8 @@ static int permission(struct inode* inode, int flag){
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
-	.lookup		= simple_lookup,
+	//.lookup		= simple_lookup,
+	.lookup		= zramfs_lookup,
 	.link		= simple_link,
 	.unlink		= simple_unlink,
 	//.symlink	= ramfs_symlink
@@ -1070,13 +1111,14 @@ static void zramfs_kill_sb(struct super_block *sb)
 static struct file_system_type ramfs_fs_type = {
 	.name		= "zramfs",
 	.get_sb		= ramfs_get_sb,
-	.kill_sb	= zramfs_kill_sb,
+	.kill_sb	= zramfs_kill_sb, //TODO:chang
+	//.kill_sb	= ramfs_kill_sb,
 };
 
 static int __init init_ramfs_fs(void)
 {
 	int err;
-	err = bdi_init(&ramfs_backing_dev_info);
+	//err = bdi_init(&ramfs_backing_dev_info);
 	if (err) {
 		printk(KERN_ERR "init ramfs_backing_dev_info err res:%d", err);
 		return err;

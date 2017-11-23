@@ -240,7 +240,8 @@ struct inode* zramfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 	//int begin =  gzsb->inode_bitmap_begin << block_bits;
 	//int end = (gzsb->inode_bitmap_begin + gzsb->inode_bitmap_block_num) << block_bits;
 	int num = zramfs_find_valid_inode_num(sb);
-	struct gza_inode * ginode; 
+	struct gza_inode * ginode;
+        int res = 0;	
 	if (!num)
 		return NULL;
 	inode = new_inode(sb);
@@ -278,6 +279,12 @@ struct inode* zramfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 		inode->i_op = &page_symlink_inode_operations;
 		break;
 	}
+	printk(KERN_NOTICE "***zramfs_get_inode, inode:%ld, drity:%ld\n",  inode->i_ino, inode->i_state & I_DIRTY );
+	res  = insert_inode_locked(inode);
+	if (res) {
+		printk(KERN_ERR "zramfs_get_inode, insert hash error, occer fatal error");
+	}	
+	unlock_new_inode(inode);
         return inode;	
 }	
 
@@ -319,9 +326,14 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 		kunmap_atomic(bh->b_page, KM_USER0);
 	put_bh(bh);
 	
- 	printk("*** root inode num:%d, mode:%o\n", ginode->num,ginode->mode);	
+ 	printk(KERN_NOTICE "***zramfs_get_inode_byid inode num:%d, ginode-num:%d, mode:%o, first block:%d\n",num, ginode->num,ginode->mode,ginode->data[0]);	
 	mode = ginode->mode; 
-	inode = new_inode(sb);
+	//inode = new_inode(sb);
+	// param require unsign long
+	inode = iget_locked(sb, num);
+	if ((inode->i_state & I_NEW) != I_NEW) {
+		return inode;
+	}
 	inode->i_size = (loff_t)ginode->length;
 	inode->i_mode = mode;
 	inode->i_private = ginode;
@@ -354,8 +366,9 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 		inode->i_op = &page_symlink_inode_operations;
 		break;
 	}
-	//add inode cache
-	insert_inode_locked(inode);
+	//add inode cache -- new_inode
+	//insert_inode_locked(inode);
+	unlock_new_inode(inode);
         return inode;	
 }	
 
@@ -565,7 +578,6 @@ int zramfs_get_data_block(struct super_block * sb) {
 	return -ENOSPC;
 }
 
-
 int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 {
 
@@ -588,6 +600,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 	int dic_num = -1;
 	int err = -ENOSPC;
 	while (cur_block < last_block) {
+		printk(KERN_NOTICE "zramfs_get_valid_directory, file block index:%d, file block:%d\n", cur_block, ginode->data[cur_block]);
 		if (ginode->data[cur_block]) {
 			file_block = ginode->data[cur_block];
 			dev_block = file_block << (block_bits - blk_blockbits);
@@ -608,6 +621,9 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 				}
 				if (dty < cur + blk_blocksize ) {
 					copy_dentry((struct directory*) dty, dentry);
+					mark_buffer_dirty(bh);
+					// dirty inode
+					mark_inode_dirty(inode);
 					put_bh(bh);
 					return 0;	
 				}
@@ -620,8 +636,12 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 		} else {
 			// alloc new block  
 			file_block = zramfs_get_data_block(inode->i_sb);
+			printk(KERN_NOTICE "zramfs_get_valid_directory, file block index:%d,  alloc file block:%d\n", cur_block, file_block);
 			if (file_block) {
+				//clear content
+				clear_bdev_block_content(bdev, file_block, blk_blocksize);
 				ginode->data[cur_block] = file_block;
+				mark_inode_dirty(inode);
 				continue;
 			}
 			return err;			
@@ -674,11 +694,11 @@ void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct bu
 						continue;	
 					}
 					if (!memcmp(dentry->d_name.name, ((struct directory *)dty)->d_name, dentry->d_name.len)) {
-						//do something
-						printk(KERN_NOTICE "zramfs_find_directory, directory name:%p", dentry->d_name.name);
+						//find entry 
+						printk(KERN_NOTICE "zramfs_find_directory, find entry name:%s", dentry->d_name.name);
 						*bhp = bh;
 						*fentry = dty;
-						break;
+						return;
 					}
 					dty += DIRECTORY_SIZE;
 				}
@@ -703,9 +723,10 @@ static struct dentry *zramfs_lookup(struct inode *dir, struct dentry *dentry, st
 	struct inode *inode;
 	//int err;
        	zramfs_find_diretory(dir, dentry, &bh, &fentry);
+	printk(KERN_NOTICE "zramfs_lookup, find dentry name:%s", dentry->d_name.name);
 	if (!fentry)
 		goto not_find;
-	printk(KERN_NOTICE "zramfs_lookup, find bh:%p, fentry:%p, bh->count:%p", bh, fentry, &bh->b_count);
+	printk(KERN_NOTICE "zramfs_lookup, find bh:%p, fentry:%p", bh, fentry);
 	inum = fentry->d_num;
 	put_bh(bh);
 	
@@ -715,11 +736,13 @@ static struct dentry *zramfs_lookup(struct inode *dir, struct dentry *dentry, st
 	printk(KERN_NOTICE "zramfs_lookup, find entry inode num:%d", fentry->d_num);
 	//lookup from inode cache
 	inode = ilookup(dir->i_sb, inum);
-	goto find;
+	if (inode)
+		goto find;
 	//lookup from disk 	
 	inode = zramfs_get_inode_byid(dir->i_sb, fentry->d_num);
-	if (!inode)
-		goto not_find;
+	printk(KERN_NOTICE "zramfs_lookup,  find inode byid inode:%p, inode->num:%ld", inode, inode->i_ino);
+	if (inode)
+		goto find;
 not_find:
 	// may add del operations, look simple_look TODO
 	d_add(dentry, NULL);
@@ -825,6 +848,9 @@ int zramfs_mkdir(struct inode* dir, struct dentry * dentry, int mode)
 	if (err)
 		return err;
 	
+	if (!err) {
+		inc_nlink(dir);
+	}	
 	return err;
 }
 
@@ -833,9 +859,9 @@ int zramfs_create(struct inode *dir, struct dentry * dentry, int mode, struct na
 	int err = 0;
 	
 	err = zramfs_mknod(dir, dentry, mode|S_IFREG, 0);
-	printk("zramfs_create, zramfs_mknod:%d\n", err);
 	if (err)
 		return err;
+	printk("zramfs_create, zramfs_mknod:%d, dentry->d_inode->i_sb->s_op:%p\n", err, dentry->d_inode->i_sb->s_op);
 	
 	err =  zramfs_get_valid_diretory(dir, dentry);
 	printk("zramfs_create, zramfs_get_valid_directory: %d\n", err);
@@ -929,10 +955,12 @@ int  write_inode(struct super_block *sb, struct inode * inode, struct buffer_hea
 		cur = bh->b_data + offset;
 	}
 	ginode = (struct gza_inode*) cur;
+	ginode->num = inode->i_ino;
 	ginode->mode = inode->i_mode;	
 	ginode->length = inode->i_size;
 	ginode->dev = inode->i_rdev;
 	memcpy(ginode->data, buf_ginode->data, sizeof(ginode->data));
+ 	printk(KERN_NOTICE "*** write inode num:%d, mode:%o\n", ginode->num,ginode->mode);	
 	if (PageHighMem(bh->b_page))
 		kunmap_atomic(bh->b_page, KM_USER0);
 	*tbh = bh;
@@ -944,6 +972,7 @@ int zramfs_write_inode(struct inode * inode, int do_sync)
 	struct buffer_head *bh;
 	struct super_block *sb = inode->i_sb;
 	int err =  write_inode(sb, inode, &bh);
+	printk(KERN_NOTICE "inode->i_sb->s_bdev->bd_disk->queue:%p", inode->i_sb->s_bdev->bd_disk->queue );
 	if (err)
 		return err;
 	mark_buffer_dirty(bh);
@@ -1063,6 +1092,7 @@ static int ramfs_fill_super(struct super_block * sb, void * data, int silent)
 	printk("**read root inode\n");
 	//inode = ramfs_get_inode(sb, S_IFDIR | fsi->mount_opts.mode, 0);
 	inode = zramfs_get_inode_byid(sb, ROOT_INODE_NUM);
+
 	if (!inode) {
 		err = -ENOMEM;
 		goto fail;
@@ -1080,6 +1110,8 @@ static int ramfs_fill_super(struct super_block * sb, void * data, int silent)
 	}
 
 	printk("** block device:%p, queue:%p.\n", sb->s_bdev, bdev_get_queue(sb->s_bdev));
+	printk("** super_block->s_list.next:%p, super_block->s_list->pre:%p.\n", sb->s_list.next, sb->s_list.prev);
+	printk("** inode->i_mapping->backing_dev_info:%p, sb->s_bdev->bd_inode->i_mapggin->backing_dev_info:%p.\n", inode->i_mapping->backing_dev_info, sb->s_bdev->bd_inode->i_mapping->backing_dev_info);
 	printk("** fill super block sucess.\n");
 	return 0;
 fail:
@@ -1104,8 +1136,21 @@ static void ramfs_kill_sb(struct super_block *sb)
 
 static void zramfs_kill_sb(struct super_block *sb)
 {
-	kfree(sb->s_fs_info);
+	//dump_stack();	
+	struct inode *inode = NULL;
+	struct bdi_writeback *wb; 
+	printk(KERN_ERR "** begin zramfs_kill_sb, super_block->s_list.next:%p, super_block->s_list->pre:%p. sb->s_op:%p\n", 
+			sb->s_list.next, sb->s_list.prev, sb->s_op);
+	// print dirty inodes
+	inode = sb->s_root->d_inode;
+ 	wb = &inode->i_mapping->backing_dev_info->wb;
+	list_for_each_entry(inode, &wb->b_dirty, i_list) {
+		printk(KERN_ERR "zramfs_kill_sb, dirty inode num:%ld", inode->i_ino);
+	}	
 	kill_block_super(sb);
+	kfree(sb->s_fs_info);
+	printk(KERN_ERR "** end zramfs_kill_sb, super_block->s_list.next:%p, super_block->s_list->pre:%p. sb->s_op:%p\n", 
+			sb->s_list.next, sb->s_list.prev, sb->s_op);
 }
 
 static struct file_system_type ramfs_fs_type = {
@@ -1117,7 +1162,7 @@ static struct file_system_type ramfs_fs_type = {
 
 static int __init init_ramfs_fs(void)
 {
-	int err;
+	int err = 0;
 	//err = bdi_init(&ramfs_backing_dev_info);
 	if (err) {
 		printk(KERN_ERR "init ramfs_backing_dev_info err res:%d", err);

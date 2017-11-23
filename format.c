@@ -48,6 +48,8 @@ int main(int argc, char* argv[])
 	
 	ginode.num = 1;
 	ginode.mode = 00777 | 0040000;
+	ginode.dev = 0;
+	ginode.length = 0;
 	memset(ginode.data,0,sizeof(ginode.data));
 
 	if (argc < 2) 

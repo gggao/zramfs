@@ -3,6 +3,40 @@
 #include <linux/buffer_head.h>
 #include "internal.h"
 
+/**
+ * clear bdev block content
+ */
+int clear_bdev_block_content(struct block_device *bdev, int dev_block, int blocksize)
+{
+	struct buffer_head *bh;
+	void * cur;
+	long * lc;
+	char * cc;
+	int last;
+
+	bh = __bread(bdev, dev_block, blocksize);
+	if (PageHighMem(bh->b_page)) {
+		cur = kmap_atomic(bh->b_page, KM_USER0);
+		cur +=  (int)bh->b_data;
+	} else {
+		cur = bh->b_data;
+	}
+	last = blocksize % sizeof(long);
+	lc = cur;
+	while (lc < (long*)cur + blocksize) {
+		*lc = 0;
+	}
+	if (last) {
+		cc = cur + blocksize - 1;
+		while (last-->0) {
+			*cc-- = 0;
+		}
+	}
+	mark_buffer_dirty(bh);
+	put_bh(bh);
+	return 0;
+}
+
  int get_dev_content(struct block_device *bdev, loff_t offset, char * buff, int size)
 {
 	int block_size = bdev->bd_block_size;

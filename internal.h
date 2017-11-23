@@ -79,6 +79,7 @@ enum SET_FLAG{
 };
 
 
+int clear_bdev_block_content(struct block_device *bdev, int block_num, int block_size);
 int get_dev_content(struct block_device *bdev, loff_t offset, char * buff, int size);
 void set_dev_content(struct block_device *bdev, loff_t offset, char * buff, int size);
 void set_dev_bit(struct block_device *bdev, loff_t offset, int bitoffset, enum SET_FLAG);

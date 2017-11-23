@@ -50,7 +50,7 @@ int gfs_get_block(struct inode *inode, sector_t iblock, struct buffer_head *bh, 
 	//int fs_blocksize_bits = inode->i_sb->s_blocksize_bits;
 	struct block_device *bdev = inode->i_sb->s_bdev;
 	int begin, end, new_num;
-	printk(KERN_NOTICE "gfs_get_block, file block:%lld, create:%d\n", iblock, create);
+	printk(KERN_NOTICE "gfs_get_block, inode->num:%ld,file block:%lld, create:%d\n",inode->i_ino, iblock, create);
 	if (iblock > MAX_FILE_BLOCK_NUM)
 		return -ENOSPC;
 	
@@ -285,9 +285,10 @@ int zramfs_generic_write_end(struct file *file, struct address_space *mapping,
 			struct page *page, void *fsdata)
 {
 	int err;
-	printk(KERN_NOTICE "zramfs_write_end begin, page dirty:%d", PageDirty(page));
+	struct inode *inode = file->f_dentry->d_inode;
+	printk(KERN_NOTICE "zramfs_write_end begin, page dirty:%d, inode:%ld, dirty:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY);
 	err = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-	printk(KERN_NOTICE "zramfs_write_end end, page dirty:%d", PageDirty(page));//bug page may be invalid
+	printk(KERN_NOTICE "zramfs_write_end end, page dirty:%d, inode:%ld, drity:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY );//bug page may be invalid
 	return err;
 }
 

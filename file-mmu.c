@@ -50,7 +50,7 @@ int gfs_get_block(struct inode *inode, sector_t iblock, struct buffer_head *bh, 
 	//int fs_blocksize_bits = inode->i_sb->s_blocksize_bits;
 	struct block_device *bdev = inode->i_sb->s_bdev;
 	int begin, end, new_num;
-	printk(KERN_NOTICE "gfs_get_block, inode->num:%ld,file block:%lld, create:%d\n",inode->i_ino, iblock, create);
+	printk(KERN_NOTICE "gfs_get_block, inode->num:%ld,file block index:%lld, file block:%d,create:%d\n",inode->i_ino, iblock, info->data[iblock], create);
 	if (iblock > MAX_FILE_BLOCK_NUM)
 		return -ENOSPC;
 	
@@ -77,16 +77,16 @@ int gfs_get_block(struct inode *inode, sector_t iblock, struct buffer_head *bh, 
 	//begin = sbinfo->data_bitmap_begin << fs_blocksize_bits;
         //end = (sbinfo->data_bitmap_begin + sbinfo->data_bitmap_block_num) << fs_blocksize_bits;
 	new_num = find_valid_bit_num(bdev, begin, end);
-	printk(KERN_NOTICE "**gfs_get_block, find_valid_bit_num, begin:%d, end:%d, result:%d\n", begin, end,  new_num);
+	printk(KERN_NOTICE "**gfs_get_block, find_valid_bit_num, inode:%ld, begin:%d, end:%d, result:%d\n",inode->i_ino, begin, end,  new_num);
 	if (! new_num)
 		return -ENOSPC;
 
 	//update inode
-	info->data[iblock] = new_num;
+	info->data[iblock] = new_num + sbinfo->data_begin;
 	mark_inode_dirty(inode);
 	
 
-	printk(KERN_NOTICE "gfs_get_block, file block:%lld, fs block:%d\n", iblock, new_num);
+	printk(KERN_NOTICE "gfs_get_block, inode:%ld, file block:%lld, fs block:%d\n", inode->i_ino, iblock, new_num + sbinfo->data_begin);
 	//bh->b_blocknr = new_num;
 	//bh->b_bdev = bdev;
 	//set_buffer_mapped(bh);

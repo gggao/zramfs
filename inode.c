@@ -45,6 +45,7 @@
 
 static const struct super_operations ramfs_ops;
 static const struct inode_operations ramfs_dir_inode_operations;
+static const struct file_operations zramfs_dir_operations;
 
 enum {
 	Opt_mode,
@@ -270,7 +271,8 @@ struct inode* zramfs_get_inode(struct super_block *sb, int mode, dev_t dev)
 		break;
 	case S_IFDIR:
 		inode->i_op = &ramfs_dir_inode_operations;
-		inode->i_fop = &simple_dir_operations;
+		//inode->i_fop = &simple_dir_operations;
+		inode->i_fop = &zramfs_dir_operations;
 
 		/* directory inodes start off with i_nlink == 2 (for "." entry) */
 		inc_nlink(inode);
@@ -357,7 +359,8 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 		break;
 	case S_IFDIR:
 		inode->i_op = &ramfs_dir_inode_operations;
-		inode->i_fop = &simple_dir_operations;
+		//inode->i_fop = &simple_dir_operations;
+		inode->i_fop = &zramfs_dir_operations;
 
 		/* directory inodes start off with i_nlink == 2 (for "." entry) */
 		inc_nlink(inode);
@@ -600,7 +603,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 	int dic_num = -1;
 	int err = -ENOSPC;
 	while (cur_block < last_block) {
-		printk(KERN_NOTICE "zramfs_get_valid_directory, file block index:%d, file block:%d\n", cur_block, ginode->data[cur_block]);
+		printk(KERN_NOTICE "zramfs_get_valid_directory, inode:%ld, file block index:%d, file block:%d\n", inode->i_ino, cur_block, ginode->data[cur_block]);
 		if (ginode->data[cur_block]) {
 			file_block = ginode->data[cur_block];
 			dev_block = file_block << (block_bits - blk_blockbits);
@@ -636,7 +639,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 		} else {
 			// alloc new block  
 			file_block = zramfs_get_data_block(inode->i_sb);
-			printk(KERN_NOTICE "zramfs_get_valid_directory, file block index:%d,  alloc file block:%d\n", cur_block, file_block);
+			printk(KERN_NOTICE "zramfs_get_valid_directory, inode:%ld,  file block index:%d,  alloc file block:%d\n",inode->i_ino, cur_block, file_block);
 			if (file_block) {
 				//clear content
 				dev_block = file_block << (block_bits - blk_blockbits);	
@@ -869,7 +872,7 @@ int zramfs_create(struct inode *dir, struct dentry * dentry, int mode, struct na
 	printk("zramfs_create, zramfs_mknod:%d, dentry->d_inode->i_sb->s_op:%p\n", err, dentry->d_inode->i_sb->s_op);
 	
 	err =  zramfs_get_valid_diretory(dir, dentry);
-	printk("zramfs_create, zramfs_get_valid_directory: %d\n", err);
+	printk("zramfs_create, zramfs_get_valid_directory, return status: %d\n", err);
 	if (err)
 		return err;
 
@@ -1002,6 +1005,109 @@ static int permission(struct inode* inode, int flag){
 	return 0;
 }
 
+inline unsigned char dt_type(struct inode *inode)
+{
+		return (inode->i_mode >> 12) & 15;
+}
+
+static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) {
+	struct dentry *dentry = filp->f_path.dentry;
+	ino_t ino;
+	int i = filp->f_pos;
+	int index = 0;
+	int offset = 0;
+	int cur_block = 0;
+	int max_block = MAX_FILE_BLOCK_NUM;
+	struct inode * inode = filp->f_dentry->d_inode;
+	int file_block;
+	int dev_block;
+	//int dev_blk_num;
+
+	if (!inode) {
+		return 0;
+	}
+	printk(KERN_NOTICE "zramfs_readdir, filp->f_pos:%lld", filp->f_pos);
+	switch(i) {
+		case 0:
+			ino = dentry->d_inode->i_ino;
+			if (filldir(dirent, ".", 1, i, ino, DT_DIR) < 0)
+				break;
+			filp->f_pos++;
+			i++;
+		case 1:
+			ino = parent_ino(dentry);
+			if (filldir(dirent, "..", 2, i, ino, DT_DIR) < 0)
+				break;
+			filp->f_pos++;
+			i++;
+		default:
+			{
+			int fs_blocksize = inode->i_sb->s_blocksize;
+			struct gza_inode *ginode = inode->i_private;
+			int block_bits = inode->i_blkbits;
+			struct buffer_head *bh;
+			struct block_device *bdev = inode->i_sb->s_bdev;
+			int dev_block_size = bdev->bd_block_size;
+			int dev_block_bits = blksize_bits(dev_block_size);
+			int dev_blk_num = 1 << (block_bits - dev_block_bits);
+			int num = 0;
+			int cur_dev_block_offset = 0;
+			void * cur;
+			void * dty;
+			struct directory *tmp_dicp;
+			index = i-2;
+			cur_block = sizeof(struct directory) * index / fs_blocksize;
+			offset  = sizeof(struct directory) * index % fs_blocksize;
+			cur_dev_block_offset = offset / dev_block_size;
+			offset = offset % dev_block_size;
+			while (cur_block < max_block) {
+				file_block = ginode->data[cur_block];
+				if (file_block) {
+					dev_block = file_block << (block_bits - dev_block_bits);
+					dev_block += cur_dev_block_offset;
+					num = dev_blk_num - cur_dev_block_offset;
+					while (--num >= 0) {
+						bh = __bread(bdev, dev_block, dev_block_size);
+						if (PageHighMem(bh->b_page)) {
+							cur = kmap_atomic(bh->b_page, KM_USER0);
+							cur +=  (int)bh->b_data;
+						} else {
+							cur = bh->b_data;
+						}
+						
+						dty = cur +  offset;
+						while (dty < cur + dev_block_size) {
+							
+							if (!((struct directory *)dty)->d_status) {
+								dty += DIRECTORY_SIZE;
+								filp->f_pos++;
+								continue;	
+							}
+							tmp_dicp = ((struct directory *) dty);
+							if (filldir(dirent, tmp_dicp->d_name, 
+								tmp_dicp->d_len, 
+								filp->f_pos, 
+								inode->i_ino, 
+								dt_type(inode)) < 0)
+								return 0;
+							filp->f_pos++;
+							dty += DIRECTORY_SIZE;
+						}
+						put_bh(bh);
+					}	
+					cur_dev_block_offset = 0;
+					offset = 0;
+					//dic has no hole
+					cur_block++;
+				} else {
+					break;
+				}
+			}
+			} // for static code block
+	}
+	return 0;
+}
+
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
@@ -1018,6 +1124,16 @@ static const struct inode_operations ramfs_dir_inode_operations = {
 	.mknod		= zramfs_mknod,
 	.rename		= simple_rename,
 	.permission     = permission,
+};
+
+static const struct file_operations zramfs_dir_operations = {
+	//.open		= dcache_dir_open,
+	.release	= dcache_dir_close,
+	.llseek		= dcache_dir_lseek,
+	.read		= generic_read_dir,
+	//.readdir	= dcache_readdir,
+	.readdir	= zramfs_readdir,
+	.fsync		= simple_sync_file,
 };
 
 static const struct super_operations ramfs_ops = {

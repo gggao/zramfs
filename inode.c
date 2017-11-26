@@ -573,7 +573,7 @@ int zramfs_get_data_block(struct super_block * sb) {
 	end = begin + sbinfo->data_bitmap_block_num * sbinfo->block_size;
 	block_num = find_valid_bit_num(bdev, begin, end);
 	if (block_num) {		
-		return block_num;
+		return block_num + sbinfo->data_begin;
 	}
 	return -ENOSPC;
 }
@@ -591,7 +591,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 	int last_block = MAX_FILE_BLOCK_NUM;
 	int file_block = 0;
 	int block_bits = inode->i_blkbits;
-	int num;
+	int num = 1 << (block_bits - blk_blockbits);
 	struct buffer_head *bh;
 
 
@@ -639,7 +639,12 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 			printk(KERN_NOTICE "zramfs_get_valid_directory, file block index:%d,  alloc file block:%d\n", cur_block, file_block);
 			if (file_block) {
 				//clear content
-				clear_bdev_block_content(bdev, file_block, blk_blocksize);
+				dev_block = file_block << (block_bits - blk_blockbits);	
+				num = 1 << (block_bits - blk_blockbits);
+				while(--num >= 0) {
+					clear_bdev_block_content(bdev, dev_block, blk_blocksize);
+					dev_block++;
+				}
 				ginode->data[cur_block] = file_block;
 				mark_inode_dirty(inode);
 				continue;
@@ -1079,6 +1084,7 @@ static int ramfs_fill_super(struct super_block * sb, void * data, int silent)
 
 	printk("**read super block\n");
 	get_dev_content(sb->s_bdev, (loff_t)0, (char*)&fsi->sbinfo, sizeof(fsi->sbinfo));
+	printk("**read super block end\n");
 	if (fsi->sbinfo.magic != FS_MAGIC)
 		goto fail;
 

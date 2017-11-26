@@ -13,7 +13,7 @@ int clear_bdev_block_content(struct block_device *bdev, int dev_block, int block
 	long * lc;
 	char * cc;
 	int last;
-
+	printk(KERN_NOTICE"clear_bdev_block_content, dev_block:%d, size:%d", dev_block, blocksize);
 	bh = __bread(bdev, dev_block, blocksize);
 	if (PageHighMem(bh->b_page)) {
 		cur = kmap_atomic(bh->b_page, KM_USER0);
@@ -23,8 +23,8 @@ int clear_bdev_block_content(struct block_device *bdev, int dev_block, int block
 	}
 	last = blocksize % sizeof(long);
 	lc = cur;
-	while (lc < (long*)cur + blocksize) {
-		*lc = 0;
+	while (lc < cur + blocksize) {
+		*lc++ = 0;
 	}
 	if (last) {
 		cc = cur + blocksize - 1;
@@ -50,8 +50,8 @@ int clear_bdev_block_content(struct block_device *bdev, int dev_block, int block
 	int left = size;
 	int i = begin_block - 1;
 	while (++i <= end_block) {
-	printk(KERN_NOTICE "zramfs, get_dev_content, bdev:%p, block:%d, block_size:%d", bdev, i, block_size);
 		bh = __bread(bdev, i, block_size);
+		printk(KERN_NOTICE "zramfs, get_dev_content, bdev:%p, block:%d, block_size:%d, bh:%p, buff:%p, size:%d", bdev, i, block_size,bh, buff, size);
 		count = block_size;
 		if (i == end_block)
 			count = left;
@@ -74,6 +74,7 @@ int clear_bdev_block_content(struct block_device *bdev, int dev_block, int block
 			kunmap_atomic(bh->b_page, KM_USER0);
 		put_bh(bh);
 	}	
+	printk(KERN_NOTICE "zramfs, get_dev_content end\n");
 	return 0;
 }
 

@@ -924,16 +924,19 @@ void zramfs_delete_inode(struct inode * inode)
 			continue;
 		num = ginode->data[i];
 		index = num >> 3;
-		bitoffset = num && 0x07;
+		bitoffset = num & 0x07;
 		offset = (int)(sbinfo->data_bitmap_begin * sbinfo->block_size + index);
 		set_dev_bit(inode->i_sb->s_bdev, offset, bitoffset, UNSET);
 	
+ 		printk(KERN_NOTICE "*** zramfs_delete_inode clear data block num:%d\n", num);	
 	}
 	//clean inode bitmap
 	index = ginode->num >> 3;
 	offset = sbinfo->inode_bitmap_begin * sbinfo->block_size + index;
-	bitoffset = ginode->num && 0x07;
+	bitoffset = ginode->num & 0x07;
 	set_dev_bit(inode->i_sb->s_bdev, offset, bitoffset, UNSET);
+		
+ 	printk(KERN_NOTICE "*** zramfs_delete_inode:%d, offset:%d, bitoffset:%d\n", ginode->num, offset, bitoffset);	
 	
 	kfree(ginode);
 
@@ -1090,6 +1093,7 @@ static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) 
 								inode->i_ino, 
 								dt_type(inode)) < 0)
 								return 0;
+							printk(KERN_NOTICE "zramfs_readdir, filp->f_pos:%lld, name:%s, inode:%ld", filp->f_pos, tmp_dicp->d_name, inode->i_ino);
 							filp->f_pos++;
 							dty += DIRECTORY_SIZE;
 						}
@@ -1108,13 +1112,30 @@ static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) 
 	return 0;
 }
 
+static int zramfs_unlink (struct inode *dir,struct dentry * dentry) {
+
+	struct inode *inode = dentry->d_inode;
+	struct buffer_head* bh = NULL;
+        struct directory *fentry = NULL;
+
+	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
+	drop_nlink(inode);
+
+	//clear parent dentry
+       	zramfs_find_diretory(dir, dentry, &bh, &fentry); //debug
+	fentry->d_status = 0;
+	put_bh(bh);	
+	return 0;
+}
+
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
 	//.lookup		= simple_lookup,
 	.lookup		= zramfs_lookup,
 	.link		= simple_link,
-	.unlink		= simple_unlink,
+	//.unlink		= simple_unlink,
+	.unlink		= zramfs_unlink,
 	//.symlink	= ramfs_symlink
 	.symlink	= ramfs_symlink,
 	//.mkdir	= ramfs_mkdir,

@@ -660,6 +660,74 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 }
 
 /**
+ * find dir is empty or not
+ * dentry must be a dentry, must be active dentry
+ * 1:dir is empty
+ * 0:dir is not empty
+ */
+static int zramfs_dir_empty(struct dentry * dentry) 
+{
+	struct inode *inode = dentry->d_inode;
+	struct gza_inode *ginode = dentry->d_inode->i_private;
+	struct block_device *bdev = inode->i_sb->s_bdev;
+	int blk_blocksize = bdev->bd_block_size;
+	int blk_blockbits = blksize_bits(blk_blocksize);
+	int dev_block = 0;
+
+	int cur_block = 0;
+	int last_block = MAX_FILE_BLOCK_NUM;
+	int file_block = 0;
+	int block_bits = inode->i_blkbits;
+	int num = 1 << (block_bits - blk_blockbits);
+	struct buffer_head *bh;
+	int ret = 1; //empty
+
+	void * dty;
+	void * cur;
+	void * kmap_addr = 0;
+	while (cur_block < last_block) {
+		if (ginode->data[cur_block]) {
+			file_block = ginode->data[cur_block];
+			dev_block = file_block << (block_bits - blk_blockbits);
+			num = 1 << (block_bits - blk_blockbits);
+			while (--num >= 0) {
+				bh = __bread(bdev, dev_block, blk_blocksize);
+				kmap_addr = 0;
+				if (PageHighMem(bh->b_page)) {
+					kmap_addr = kmap_atomic(bh->b_page, KM_USER0);
+					cur = kmap_addr + (int)bh->b_data;
+				} else {
+					cur = bh->b_data;
+				}
+				dty = cur;
+				while(dty < cur + blk_blocksize &&
+						!((struct directory *)dty)->d_status) {
+					dty += DIRECTORY_SIZE;
+				}
+				put_bh(bh);
+				dev_block++;
+				if (kmap_addr) {
+					kunmap_atomic(kmap_addr, KM_USER0);
+				}
+				if (dty < cur + blk_blocksize) {
+					ret = 0;
+					goto out;
+				}
+
+			}
+
+			cur_block++;
+		} else {
+			break;
+		}
+
+	}
+out:
+	return ret;
+
+}
+
+/**
  * lookup a dentry
  */
 void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct buffer_head **bhp, struct directory **fentry)
@@ -1128,6 +1196,22 @@ static int zramfs_unlink (struct inode *dir,struct dentry * dentry) {
 	return 0;
 }
 
+static int zramfs_rmdir(struct inode* dir, struct dentry *dentry){
+	
+	if (!dentry->d_inode) {
+		return 0;
+	}
+	//dentry is empty?
+	if (!zramfs_dir_empty(dentry)) {
+		return -ENOTEMPTY;
+	}
+ 
+	drop_nlink(dentry->d_inode);
+	zramfs_unlink(dir, dentry);
+	drop_nlink(dir);	
+   	return 0;		
+}
+
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
@@ -1140,7 +1224,8 @@ static const struct inode_operations ramfs_dir_inode_operations = {
 	.symlink	= ramfs_symlink,
 	//.mkdir	= ramfs_mkdir,
 	.mkdir		= zramfs_mkdir,
-	.rmdir		= simple_rmdir,
+	//.rmdir		= simple_rmdir,
+	.rmdir		= zramfs_rmdir,
 	//.mknod		= ramfs_mknod,
 	.mknod		= zramfs_mknod,
 	.rename		= simple_rename,

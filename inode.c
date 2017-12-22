@@ -954,7 +954,12 @@ static int zramfs_symlink(struct inode * dir, struct dentry *dentry, const char 
 	struct inode *inode;
 	int error = -ENOSPC;
 
-	inode = ramfs_get_inode(dir->i_sb, S_IFLNK|S_IRWXUGO, 0);
+	inode = zramfs_get_inode(dir->i_sb, S_IFLNK|S_IRWXUGO, 0);
+	if (!inode) {
+		printk(KERN_NOTICE"zramfs_symlink, zramfs_get_inode can't get inode, err code:%d", error);
+		return error;
+	}
+
 	if (inode) {
 		int l = strlen(symname)+1;
 		error = page_symlink(inode, symname, l);
@@ -962,10 +967,17 @@ static int zramfs_symlink(struct inode * dir, struct dentry *dentry, const char 
 			if (dir->i_mode & S_ISGID)
 				inode->i_gid = dir->i_gid;
 			d_instantiate(dentry, inode);
-			dget(dentry);
 			dir->i_mtime = dir->i_ctime = CURRENT_TIME;
-		} else
+			error = zramfs_get_valid_diretory(dir, dentry);
+			if (error) {
+				printk(KERN_NOTICE"zramfs_symlink, zramfs_get_valid_diretory error,error code:%d", error);
+				//dput(dentry);
+				return error;
+			}
+		} else {
+			printk(KERN_NOTICE"zramfs_symlink, zramfs_get_inode error,error code:%d", error);
 			iput(inode);
+		}
 	}
 	return error;
 }
@@ -1221,7 +1233,7 @@ static const struct inode_operations ramfs_dir_inode_operations = {
 	//.unlink		= simple_unlink,
 	.unlink		= zramfs_unlink,
 	//.symlink	= ramfs_symlink
-	.symlink	= ramfs_symlink,
+	.symlink	= zramfs_symlink,
 	//.mkdir	= ramfs_mkdir,
 	.mkdir		= zramfs_mkdir,
 	//.rmdir		= simple_rmdir,

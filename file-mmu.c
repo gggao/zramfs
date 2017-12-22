@@ -285,10 +285,16 @@ int zramfs_generic_write_end(struct file *file, struct address_space *mapping,
 			struct page *page, void *fsdata)
 {
 	int err;
-	struct inode *inode = file->f_dentry->d_inode;
-	printk(KERN_NOTICE "zramfs_write_end begin, page dirty:%d, inode:%ld, dirty:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY);
+	struct inode *inode;
+	//when  write inode directly, the file is null, look page_symlink
+	if (file) {
+		inode = file->f_dentry->d_inode;
+		printk(KERN_NOTICE "zramfs_write_end begin, page dirty:%d, inode:%ld, dirty:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY);
+	}
 	err = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-	printk(KERN_NOTICE "zramfs_write_end end, page dirty:%d, inode:%ld, drity:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY );//bug page may be invalid
+	if (file) {
+		printk(KERN_NOTICE "zramfs_write_end end, page dirty:%d, inode:%ld, drity:%ld", PageDirty(page), inode->i_ino, inode->i_state & I_DIRTY );//bug page may be invalid
+	}
 	return err;
 }
 

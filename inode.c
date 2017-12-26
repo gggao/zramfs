@@ -1224,6 +1224,41 @@ static int zramfs_rmdir(struct inode* dir, struct dentry *dentry){
    	return 0;		
 }
 
+int zramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+				struct inode *new_dir, struct dentry *new_dentry)
+{
+	struct buffer_head* bh = NULL;
+        struct directory *fentry = NULL;
+	int err = 0;
+	if (new_dentry->d_inode) {
+		drop_nlink(new_dentry->d_inode);
+		// change the inode
+       		zramfs_find_diretory(new_dir, new_dentry, &bh, &fentry);
+	       	if (!fentry) {
+			printk(KERN_ERR"zramfs_rename, not find the new_dentry");
+			return -EIO;
+		}	
+		fentry->d_num = old_dentry->d_inode->i_ino;
+		put_bh(bh);	
+	} else {
+		// create the dentry
+		new_dentry->d_inode = old_dentry->d_inode;
+		err =  zramfs_get_valid_diretory(new_dir, new_dentry);
+		new_dentry->d_inode = NULL;
+		if (err)
+			return err;
+	}
+	//del the old dentry	
+       	zramfs_find_diretory(old_dir, old_dentry, &bh, &fentry); 
+	if (!fentry) {
+		printk(KERN_ERR"zramfs_rename, not find the old_dentry");
+		return -EIO;
+	}	
+	fentry->d_status = 0;
+	put_bh(bh);	
+	return err;
+}
+
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
@@ -1240,7 +1275,8 @@ static const struct inode_operations ramfs_dir_inode_operations = {
 	.rmdir		= zramfs_rmdir,
 	//.mknod		= ramfs_mknod,
 	.mknod		= zramfs_mknod,
-	.rename		= simple_rename,
+	//.rename		= simple_rename,
+	.rename		= zramfs_rename,
 	.permission     = permission,
 };
 

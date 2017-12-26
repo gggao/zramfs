@@ -1258,13 +1258,29 @@ int zramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	put_bh(bh);	
 	return err;
 }
+int zramfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry) {
+
+	int err = 0;	
+	struct inode *inode = old_dentry->d_inode;
+
+	printk(KERN_NOTICE "zramfs_link, dentry->d_inode:%p", dentry->d_inode);
+	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
+	inc_nlink(inode);
+	atomic_inc(&inode->i_count);
+
+	d_instantiate(dentry, inode);
+	err =  zramfs_get_valid_diretory(dir, dentry);
+	printk(KERN_NOTICE "zramfs_link, zramfs_get_valid_diretory, err:%d", err);
+	return err;
+}
 
 static const struct inode_operations ramfs_dir_inode_operations = {
 	//.create		= ramfs_create,
 	.create		= zramfs_create,
 	//.lookup		= simple_lookup,
 	.lookup		= zramfs_lookup,
-	.link		= simple_link,
+	//.link		= simple_link,
+	.link		= zramfs_link,
 	//.unlink		= simple_unlink,
 	.unlink		= zramfs_unlink,
 	//.symlink	= ramfs_symlink

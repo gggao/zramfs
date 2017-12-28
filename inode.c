@@ -306,6 +306,7 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 	umode_t mode = 0;	
 	struct buffer_head *bh = NULL;
 	void *cur = NULL;
+	void *mapAddr = NULL;
 	
 	if (!num)
 		return NULL;
@@ -315,7 +316,7 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 		return NULL;
 
 	if (PageHighMem(bh->b_page)) {
-		cur = kmap_atomic(bh->b_page, KM_USER0);
+		mapAddr = cur = kmap_atomic(bh->b_page, KM_USER0);
 		cur +=  (int)bh->b_data;
 		cur += off;	
 	} else {
@@ -325,7 +326,7 @@ struct inode* zramfs_get_inode_byid(struct super_block *sb, int num)
 	memcpy(ginode, cur, sizeof(struct gza_inode));
 		
 	if (PageHighMem(bh->b_page))
-		kunmap_atomic(bh->b_page, KM_USER0);
+		kunmap_atomic(mapAddr, KM_USER0);
 	put_bh(bh);
 	
  	printk(KERN_NOTICE "***zramfs_get_inode_byid inode num:%d, ginode-num:%d, mode:%o, first block:%d\n",num, ginode->num,ginode->mode,ginode->data[0]);	
@@ -600,6 +601,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 
 	void * dty;
 	void * cur;
+	void * mapAddr;
 	int dic_num = -1;
 	int err = -ENOSPC;
 	while (cur_block < last_block) {
@@ -609,9 +611,10 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 			dev_block = file_block << (block_bits - blk_blockbits);
 			num = 1 << (block_bits - blk_blockbits);
 			while (--num >= 0) {
+				mapAddr = 0;
 				bh = __bread(bdev, dev_block, blk_blocksize);
 				if (PageHighMem(bh->b_page)) {
-					cur = kmap_atomic(bh->b_page, KM_USER0);
+					mapAddr = cur = kmap_atomic(bh->b_page, KM_USER0);
 					cur +=  (int)bh->b_data;
 				} else {
 					cur = bh->b_data;
@@ -628,7 +631,16 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 					// dirty inode
 					mark_inode_dirty(inode);
 					put_bh(bh);
+					
+					//unmap	
+					if (mapAddr) {
+						kunmap_atomic(mapAddr, KM_USER0);
+					}
 					return 0;	
+				}
+				//unmap
+				if (mapAddr) {
+					kunmap_atomic(mapAddr, KM_USER0);
 				}
 				put_bh(bh);
 				dev_block++;
@@ -640,7 +652,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 			// alloc new block  
 			file_block = zramfs_get_data_block(inode->i_sb);
 			printk(KERN_NOTICE "zramfs_get_valid_directory, inode:%ld,  file block index:%d,  alloc file block:%d\n",inode->i_ino, cur_block, file_block);
-			if (file_block) {
+			if (file_block > 0) {
 				//clear content
 				dev_block = file_block << (block_bits - blk_blockbits);	
 				num = 1 << (block_bits - blk_blockbits);
@@ -652,7 +664,7 @@ int zramfs_get_valid_diretory(struct inode * inode, struct dentry *dentry)
 				mark_inode_dirty(inode);
 				continue;
 			}
-			return err;			
+			return file_block;			
 		}	
 	}
 
@@ -730,7 +742,7 @@ out:
 /**
  * lookup a dentry
  */
-void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct buffer_head **bhp, struct directory **fentry)
+void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct buffer_head **bhp, struct directory **fentry, void ** kmapAddr)
 {
 
 	struct gza_inode *ginode = inode->i_private;
@@ -756,9 +768,10 @@ void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct bu
 			dev_block = file_block << (block_bits - blk_blockbits);
 			num = 1 << (block_bits - blk_blockbits);
 			while (--num >= 0) {
+				*kmapAddr = 0;
 				bh = __bread(bdev, dev_block, blk_blocksize);
 				if (PageHighMem(bh->b_page)) {
-					cur = kmap_atomic(bh->b_page, KM_USER0);
+					*kmapAddr = cur = kmap_atomic(bh->b_page, KM_USER0);
 					cur +=  (int)bh->b_data;
 				} else {
 					cur = bh->b_data;
@@ -777,6 +790,9 @@ void zramfs_find_diretory(struct inode * inode, struct dentry *dentry, struct bu
 						return;
 					}
 					dty += DIRECTORY_SIZE;
+				}
+				if (*kmapAddr) {
+					kunmap_atomic(*kmapAddr, KM_USER0);
 				}
 				put_bh(bh);
 				dev_block++;
@@ -797,14 +813,18 @@ static struct dentry *zramfs_lookup(struct inode *dir, struct dentry *dentry, st
         struct directory *fentry = NULL;
 	int inum;
 	struct inode *inode;
+	void * kmapAddr = NULL;
 	//int err;
-       	zramfs_find_diretory(dir, dentry, &bh, &fentry);
+       	zramfs_find_diretory(dir, dentry, &bh, &fentry, &kmapAddr);
 	printk(KERN_NOTICE "zramfs_lookup, find dentry name:%s", dentry->d_name.name);
 	if (!fentry)
 		goto not_find;
 	printk(KERN_NOTICE "zramfs_lookup, find bh:%p, fentry:%p", bh, fentry);
 	inum = fentry->d_num;
 	put_bh(bh);
+	if (kmapAddr) {
+		kunmap_atomic(kmapAddr, KM_USER0);
+	}
 	
 	printk(KERN_NOTICE "zramfs_lookup, find parent inode:%ld", dir->i_ino);
 	printk(KERN_NOTICE "zramfs_lookup, find entry name:%s", dentry->d_name.name);
@@ -1022,7 +1042,7 @@ void zramfs_delete_inode(struct inode * inode)
 
 }
 
-int  write_inode(struct super_block *sb, struct inode * inode, struct buffer_head** tbh)
+int  write_inode(struct super_block *sb, struct inode * inode, struct buffer_head** tbh, void **kmapAddr)
 {
 	gzafs_sb_info * sbinfo = &((struct ramfs_fs_info*)sb->s_fs_info)->sbinfo;
 	struct buffer_head *bh;
@@ -1039,6 +1059,7 @@ int  write_inode(struct super_block *sb, struct inode * inode, struct buffer_hea
 
 	if (PageHighMem(bh->b_page)) {
 		cur = kmap_atomic(bh->b_page, KM_USER0);
+		*kmapAddr = (void*)cur;
 		cur +=  (int)bh->b_data;
 		cur += offset;	
 	} else {
@@ -1052,8 +1073,6 @@ int  write_inode(struct super_block *sb, struct inode * inode, struct buffer_hea
 	ginode->dev = inode->i_rdev;
 	memcpy(ginode->data, buf_ginode->data, sizeof(ginode->data));
  	printk(KERN_NOTICE "*** write inode num:%d, mode:%o\n", ginode->num,ginode->mode);	
-	if (PageHighMem(bh->b_page))
-		kunmap_atomic(bh->b_page, KM_USER0);
 	*tbh = bh;
 	return 0;
 }
@@ -1062,7 +1081,8 @@ int zramfs_write_inode(struct inode * inode, int do_sync)
 {
 	struct buffer_head *bh;
 	struct super_block *sb = inode->i_sb;
-	int err =  write_inode(sb, inode, &bh);
+	void *kmapAddr =  NULL;
+	int err =  write_inode(sb, inode, &bh, &kmapAddr);
 	printk(KERN_NOTICE "inode->i_sb->s_bdev->bd_disk->queue:%p", inode->i_sb->s_bdev->bd_disk->queue );
 	if (err)
 		return err;
@@ -1075,6 +1095,10 @@ int zramfs_write_inode(struct inode * inode, int do_sync)
 		}
 	}
 	brelse(bh);
+	
+	if (kmapAddr) {
+		kunmap_atomic(kmapAddr, KM_USER0);
+	}
 	return err;
 }
 
@@ -1136,6 +1160,7 @@ static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) 
 			int num = 0;
 			int cur_dev_block_offset = 0;
 			void * cur;
+			void * mapAddr=NULL;
 			void * dty;
 			struct directory *tmp_dicp;
 			index = i-2;
@@ -1151,8 +1176,9 @@ static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) 
 					num = dev_blk_num - cur_dev_block_offset;
 					while (--num >= 0) {
 						bh = __bread(bdev, dev_block, dev_block_size);
+						mapAddr = 0;
 						if (PageHighMem(bh->b_page)) {
-							cur = kmap_atomic(bh->b_page, KM_USER0);
+							mapAddr = cur = kmap_atomic(bh->b_page, KM_USER0);
 							cur +=  (int)bh->b_data;
 						} else {
 							cur = bh->b_data;
@@ -1171,11 +1197,18 @@ static int zramfs_readdir(struct file * filp, void * dirent, filldir_t filldir) 
 								tmp_dicp->d_len, 
 								filp->f_pos, 
 								inode->i_ino, 
-								dt_type(inode)) < 0)
+								dt_type(inode)) < 0) {
+								if (mapAddr) {
+									kunmap_atomic(mapAddr, KM_USER0);
+								}
 								return 0;
+							}
 							printk(KERN_NOTICE "zramfs_readdir, filp->f_pos:%lld, name:%s, inode:%ld", filp->f_pos, tmp_dicp->d_name, inode->i_ino);
 							filp->f_pos++;
 							dty += DIRECTORY_SIZE;
+						}
+						if (mapAddr) {
+							kunmap_atomic(mapAddr, KM_USER0);
 						}
 						put_bh(bh);
 					}	
@@ -1197,14 +1230,18 @@ static int zramfs_unlink (struct inode *dir,struct dentry * dentry) {
 	struct inode *inode = dentry->d_inode;
 	struct buffer_head* bh = NULL;
         struct directory *fentry = NULL;
+	void *kmapAddr = NULL;
 
 	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
 	drop_nlink(inode);
 
 	//clear parent dentry
-       	zramfs_find_diretory(dir, dentry, &bh, &fentry); //debug
+       	zramfs_find_diretory(dir, dentry, &bh, &fentry, &kmapAddr); //debug
 	fentry->d_status = 0;
 	put_bh(bh);	
+	if (kmapAddr) {
+		kunmap_atomic(kmapAddr, KM_USER0);
+	}
 	return 0;
 }
 
@@ -1230,16 +1267,20 @@ int zramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 	struct buffer_head* bh = NULL;
         struct directory *fentry = NULL;
 	int err = 0;
+	void* kmapAddr = NULL;
 	if (new_dentry->d_inode) {
 		drop_nlink(new_dentry->d_inode);
 		// change the inode
-       		zramfs_find_diretory(new_dir, new_dentry, &bh, &fentry);
+       		zramfs_find_diretory(new_dir, new_dentry, &bh, &fentry, &kmapAddr);
 	       	if (!fentry) {
 			printk(KERN_ERR"zramfs_rename, not find the new_dentry");
 			return -EIO;
 		}	
 		fentry->d_num = old_dentry->d_inode->i_ino;
-		put_bh(bh);	
+		put_bh(bh);
+		if (kmapAddr) {
+			kunmap_atomic(kmapAddr, KM_USER0);
+		}
 	} else {
 		// create the dentry
 		new_dentry->d_inode = old_dentry->d_inode;
@@ -1248,14 +1289,18 @@ int zramfs_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (err)
 			return err;
 	}
+	kmapAddr = 0;
 	//del the old dentry	
-       	zramfs_find_diretory(old_dir, old_dentry, &bh, &fentry); 
+       	zramfs_find_diretory(old_dir, old_dentry, &bh, &fentry, &kmapAddr); 
 	if (!fentry) {
 		printk(KERN_ERR"zramfs_rename, not find the old_dentry");
 		return -EIO;
 	}	
 	fentry->d_status = 0;
 	put_bh(bh);	
+	if (kmapAddr) {
+		kunmap_atomic(kmapAddr, KM_USER0);
+	}
 	return err;
 }
 int zramfs_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry) {
